@@ -28,9 +28,10 @@ const TILE_COLORS = {
 };
 
 class World {
-  constructor(seed, cultureEngine) {
+  constructor(seed, cultureEngine, storage) {
     this.seed = seed;
     this.culture = cultureEngine;
+    this.storage = storage;
     this.macroNoise = new ValueNoise2D(seed);
     this.detailNoise = new ValueNoise2D(seed + 1013);
     this.forestNoise = new ValueNoise2D(seed + 2027);
@@ -184,6 +185,8 @@ class World {
     }
 
     const isStarterChunk = cx === 0 && cy === 0;
+    let hasSettlement = false;
+
     if (landCount > 480 && (isStarterChunk || rng.next() < 0.28)) {
       const settlementId = `set_${cx}_${cy}`;
       const nameSeed = hashCoords(this.seed + 311, cx, cy);
@@ -216,6 +219,7 @@ class World {
       }
 
       if (placed > 0) {
+        hasSettlement = true;
         this.settlements.set(settlementId, {
           id: settlementId,
           name: settlementName,
@@ -226,16 +230,20 @@ class World {
 
         const villagerCount = rng.int(2, 4);
         for (let v = 0; v < villagerCount; v++) {
+          const npcId = `npc_${cx}_${cy}_${v}`;
+          if (this.storage.deadNpcs.has(npcId)) continue;
+
           const vx = startTx + rng.int(6, CHUNK_SIZE - 6);
           const vy = startTy + roadY + (rng.next() < 0.5 ? -1 : 1);
-          const npcId = `npc_${cx}_${cy}_${v}`;
           const profile = this.culture.generateNpcProfile(
             hashCoords(this.seed + 9001 + v, cx, cy),
             culture,
             "villager"
           );
+          const segments = rng.int(2, 3);
           this.npcs.set(npcId, {
             id: npcId,
+            role: "villager",
             settlementId,
             cultureId,
             x: vx * TILE_SIZE + TILE_SIZE / 2,
@@ -247,6 +255,10 @@ class World {
             moveTimer: rng.range(0.5, 2.5),
             vx: 0,
             vy: 0,
+            hostile: false,
+            segments,
+            hp: segments * 2,
+            maxHp: segments * 2,
             profile
           });
         }
@@ -262,6 +274,56 @@ class World {
       }
     }
 
+    // Hostile Roaming Wilderness Raiders (outside settlements)
+    if (!hasSettlement && landCount > 180 && rng.next() < 0.55) {
+      const distFactor = Math.min(6, Math.floor(Math.hypot(cx, cy) * 0.8));
+      const enemyCount = rng.int(1, 2);
+
+      for (let e = 0; e < enemyCount; e++) {
+        const enemyId = `enemy_${cx}_${cy}_${e}`;
+        if (this.storage.deadNpcs.has(enemyId)) continue;
+
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const lx = rng.int(4, CHUNK_SIZE - 5);
+          const ly = rng.int(4, CHUNK_SIZE - 5);
+          const t = tiles[ly * CHUNK_SIZE + lx];
+          if (t === TILES.GRASS || t === TILES.FOREST || t === TILES.SAND) {
+            const profile = this.culture.generateNpcProfile(
+              hashCoords(this.seed + 6101 + e, cx, cy),
+              culture,
+              "raider"
+            );
+            const segments = Math.min(10, rng.int(1, 3) + distFactor);
+            const ex = (startTx + lx) * TILE_SIZE + TILE_SIZE / 2;
+            const ey = (startTy + ly) * TILE_SIZE + TILE_SIZE / 2;
+            this.npcs.set(enemyId, {
+              id: enemyId,
+              role: "raider",
+              settlementId: null,
+              cultureId,
+              x: ex,
+              y: ey,
+              homeX: ex,
+              homeY: ey,
+              facing: "down",
+              walkTimer: 0,
+              moveTimer: rng.range(0.5, 2.0),
+              vx: 0,
+              vy: 0,
+              hostile: true,
+              chaseSpeed: 38 + Math.min(16, segments * 2),
+              segments,
+              hp: segments * 2,
+              maxHp: segments * 2,
+              profile
+            });
+            break;
+          }
+        }
+      }
+    }
+
+    // Boats along coastlines
     if (isStarterChunk || rng.next() < 0.42) {
       const candidates = [];
       for (let ly = 1; ly < CHUNK_SIZE - 1; ly++) {
@@ -288,7 +350,8 @@ class World {
       if (candidates.length > 0) {
         const spot = candidates[rng.int(0, candidates.length - 1)];
         const boatId = `boat_${cx}_${cy}`;
-        const guarded = isStarterChunk ? false : rng.next() < 0.45;
+        const wasUnlocked = this.storage.unlockedBoats.has(boatId);
+        const guarded = (isStarterChunk || wasUnlocked) ? false : rng.next() < 0.45;
         let guardNpcId = null;
 
         if (guarded) {
@@ -304,37 +367,49 @@ class World {
             const nTile = this.getBaseTileType(ntx, nty);
             if (nTile === TILES.SAND || nTile === TILES.GRASS) {
               guardNpcId = `guard_${cx}_${cy}`;
-              const profile = this.culture.generateNpcProfile(
-                hashCoords(this.seed + 4409, cx, cy),
-                culture,
-                "boatkeeper"
-              );
-              this.npcs.set(guardNpcId, {
-                id: guardNpcId,
-                settlementId: null,
-                cultureId,
-                x: ntx * TILE_SIZE + TILE_SIZE / 2,
-                y: nty * TILE_SIZE + TILE_SIZE / 2,
-                homeX: ntx * TILE_SIZE + TILE_SIZE / 2,
-                homeY: nty * TILE_SIZE + TILE_SIZE / 2,
-                facing: "down",
-                walkTimer: 0,
-                moveTimer: 999,
-                vx: 0,
-                vy: 0,
-                stationary: true,
-                profile
-              });
+              if (!this.storage.deadNpcs.has(guardNpcId)) {
+                const profile = this.culture.generateNpcProfile(
+                  hashCoords(this.seed + 4409, cx, cy),
+                  culture,
+                  "boatkeeper"
+                );
+                const segments = rng.int(3, 5);
+                this.npcs.set(guardNpcId, {
+                  id: guardNpcId,
+                  role: "boatkeeper",
+                  guardingBoatId: boatId,
+                  settlementId: null,
+                  cultureId,
+                  x: ntx * TILE_SIZE + TILE_SIZE / 2,
+                  y: nty * TILE_SIZE + TILE_SIZE / 2,
+                  homeX: ntx * TILE_SIZE + TILE_SIZE / 2,
+                  homeY: nty * TILE_SIZE + TILE_SIZE / 2,
+                  facing: "down",
+                  walkTimer: 0,
+                  moveTimer: 999,
+                  vx: 0,
+                  vy: 0,
+                  stationary: true,
+                  hostile: false,
+                  segments,
+                  hp: segments * 2,
+                  maxHp: segments * 2,
+                  profile
+                });
+              } else {
+                guardNpcId = null;
+              }
               break;
             }
           }
         }
 
+        const movedOverride = this.storage.movedBoats.get(boatId);
         this.boats.set(boatId, {
           id: boatId,
-          x: spot.tx * TILE_SIZE + TILE_SIZE / 2,
-          y: spot.ty * TILE_SIZE + TILE_SIZE / 2,
-          guarded: guarded && guardNpcId !== null,
+          x: movedOverride ? movedOverride.x : spot.tx * TILE_SIZE + TILE_SIZE / 2,
+          y: movedOverride ? movedOverride.y : spot.ty * TILE_SIZE + TILE_SIZE / 2,
+          guarded: movedOverride ? movedOverride.guarded : (guarded && guardNpcId !== null),
           fee: 15,
           guardNpcId
         });
@@ -392,7 +467,7 @@ class World {
 
   updateNpcs(dt) {
     for (const npc of this.npcs.values()) {
-      if (npc.stationary) continue;
+      if (npc.stationary || npc.hostile) continue;
 
       npc.moveTimer -= dt;
       if (npc.moveTimer <= 0) {
