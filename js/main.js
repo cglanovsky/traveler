@@ -42,6 +42,7 @@ const player = {
   walkTimer: 0,
   inBoat: false,
   activeBoatId: null,
+  boardCooldown: 0,
   coins: 45,
   hp: 6,
   maxHp: 6,
@@ -69,7 +70,6 @@ worldMap.discoverAround(player.x, player.y, 16);
 
 const keys = new Set();
 window.addEventListener("keydown", (e) => {
-  // Game Over Reload Handler
   if (player.hp <= 0) {
     if (e.key === "Enter" || e.key.toLowerCase() === "l") {
       if (storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine)) {
@@ -81,7 +81,6 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Handle typing while renaming an artifact
   if (inventoryUI.isOpen && inventoryUI.renaming) {
     e.preventDefault();
     if (e.key === "Enter") {
@@ -104,7 +103,6 @@ window.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   keys.add(key);
 
-  // Quick Save & Quick Load
   if (!dialogue.activeNpc && !inventoryUI.isOpen) {
     if (key === "k") {
       const ok = storage.saveGame(WORLD_SEED, player, world, interior, worldMap, dialogue, artifactEngine);
@@ -122,7 +120,6 @@ window.addEventListener("keydown", (e) => {
     }
   }
 
-  // Dialogue Navigation
   if (dialogue.activeNpc) {
     if (key === "w" || key === "arrowup") {
       const max = dialogue.mode === "menu"
@@ -146,7 +143,6 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Inventory Toggle
   if (key === "i") {
     if (worldMap.isOpen) worldMap.isOpen = false;
     inventoryUI.isOpen = !inventoryUI.isOpen;
@@ -170,7 +166,6 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Map Toggle
   if (key === "m" || key === "tab") {
     e.preventDefault();
     const mapX = interior.activeRoom && interior.returnPos ? interior.returnPos.x : player.x;
@@ -237,12 +232,63 @@ function findNearbyNpc(maxDist = 22) {
   return closest;
 }
 
+function findAdjacentShoreTile(preferDx = 0, preferDy = 0) {
+  const baseTx = Math.floor(player.x / TILE_SIZE);
+  const baseTy = Math.floor(player.y / TILE_SIZE);
+
+  // Check directional probe tile first if moving
+  if (preferDx !== 0 || preferDy !== 0) {
+    const probeTx = Math.floor((player.x + preferDx * 11) / TILE_SIZE);
+    const probeTy = Math.floor((player.y + preferDy * 11) / TILE_SIZE);
+    if (world.isLandWalkable(probeTx, probeTy)) {
+      return { tx: probeTx, ty: probeTy };
+    }
+  }
+
+  // Check all 8 surrounding tiles sorted by closeness to player
+  let best = null;
+  let bestDist = Infinity;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const tx = baseTx + dx;
+      const ty = baseTy + dy;
+      if (world.isLandWalkable(tx, ty)) {
+        const cx = (tx + 0.5) * TILE_SIZE;
+        const cy = (ty + 0.5) * TILE_SIZE;
+        const d = Math.hypot(cx - player.x, cy - player.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { tx, ty };
+        }
+      }
+    }
+  }
+  return best;
+}
+
 function boardBoat(boat) {
   player.inBoat = true;
   player.activeBoatId = boat.id;
   player.x = boat.x;
   player.y = boat.y;
-  showBanner("BOARDED BOAT - STEER ONTO SHORE TO DISEMBARK");
+  showBanner("BOARDED BOAT - STEER ONTO SHORE OR PRESS [E] TO LAND");
+}
+
+function disembarkToTile(shoreTile) {
+  const boat = world.boats.get(player.activeBoatId);
+  if (boat) {
+    boat.x = player.x;
+    boat.y = player.y;
+  }
+  player.x = (shoreTile.tx + 0.5) * TILE_SIZE;
+  player.y = (shoreTile.ty + 0.5) * TILE_SIZE;
+  player.overworldX = player.x;
+  player.overworldY = player.y;
+  player.inBoat = false;
+  player.activeBoatId = null;
+  player.boardCooldown = 0.6;
+  showBanner("DISEMBARKED ON SHORE");
 }
 
 function handleInteract() {
@@ -254,7 +300,15 @@ function handleInteract() {
     return;
   }
 
-  if (player.inBoat) return;
+  if (player.inBoat) {
+    const shore = findAdjacentShoreTile();
+    if (shore) {
+      disembarkToTile(shore);
+    } else {
+      showBanner("SAIL CLOSER TO SHORE TO DISEMBARK");
+    }
+    return;
+  }
 
   const boat = findNearbyBoat(24);
   if (boat) {
@@ -304,6 +358,9 @@ function canMoveTo(nextX, nextY, mode) {
 function update(dt) {
   if (statusBanner.timer > 0) {
     statusBanner.timer -= dt;
+  }
+  if (player.boardCooldown > 0) {
+    player.boardCooldown = Math.max(0, player.boardCooldown - dt);
   }
 
   if (player.hp <= 0 || dialogue.activeNpc || inventoryUI.isOpen) {
@@ -384,9 +441,11 @@ function update(dt) {
       if (canMoveTo(player.x + moveX, player.y, "land")) player.x += moveX;
       if (canMoveTo(player.x, player.y + moveY, "land")) player.y += moveY;
 
-      const touchBoat = findNearbyBoat(14);
-      if (touchBoat && !touchBoat.guarded) {
-        boardBoat(touchBoat);
+      if (player.boardCooldown <= 0) {
+        const touchBoat = findNearbyBoat(14);
+        if (touchBoat && !touchBoat.guarded) {
+          boardBoat(touchBoat);
+        }
       }
 
       const pTx = Math.floor(player.x / TILE_SIZE);
@@ -412,22 +471,20 @@ function update(dt) {
           boat.x = player.x;
           boat.y = player.y;
         }
-      } else if (canMoveTo(nextX, nextY, "land")) {
-        if (boat) {
-          boat.x = player.x;
-          boat.y = player.y;
-        }
-        player.x = nextX;
-        player.y = nextY;
-        player.inBoat = false;
-        player.activeBoatId = null;
-        showBanner("DISEMBARKED ON SHORE");
       } else {
-        if (canMoveTo(nextX, player.y, "water")) player.x = nextX;
-        if (canMoveTo(player.x, nextY, "water")) player.y = nextY;
-        if (boat) {
-          boat.x = player.x;
-          boat.y = player.y;
+        // Check if steering into walkable shore tile
+        const probeTx = Math.floor((player.x + vx * 10) / TILE_SIZE);
+        const probeTy = Math.floor((player.y + vy * 10) / TILE_SIZE);
+        if (world.isLandWalkable(probeTx, probeTy)) {
+          disembarkToTile({ tx: probeTx, ty: probeTy });
+        } else {
+          // Slide along coastline
+          if (canMoveTo(nextX, player.y, "water")) player.x = nextX;
+          if (canMoveTo(player.x, nextY, "water")) player.y = nextY;
+          if (boat) {
+            boat.x = player.x;
+            boat.y = player.y;
+          }
         }
       }
     }
@@ -706,7 +763,14 @@ function drawHUD() {
   ctx.fillText(`C:${player.coins} ATK:${dmg}`, 52, 8);
   ctx.fillText(`[I] [M] [E] [SPC] [K]SAVE`, VIEW_WIDTH - 128, 8);
 
-  if (!player.inBoat && !dialogue.activeNpc) {
+  if (player.inBoat && !dialogue.activeNpc) {
+    if (findAdjacentShoreTile()) {
+      ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
+      ctx.fillRect(54, VIEW_HEIGHT - 22, VIEW_WIDTH - 108, 16);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillText(`[E] DISEMBARK ON SHORE`, 76, VIEW_HEIGHT - 14);
+    }
+  } else if (!player.inBoat && !dialogue.activeNpc) {
     const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
     const nearNpc = findNearbyNpc(22);
 
