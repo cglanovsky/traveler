@@ -236,6 +236,8 @@ class World {
           );
           this.npcs.set(npcId, {
             id: npcId,
+            settlementId,
+            cultureId,
             x: vx * TILE_SIZE + TILE_SIZE / 2,
             y: vy * TILE_SIZE + TILE_SIZE / 2,
             homeX: vx * TILE_SIZE + TILE_SIZE / 2,
@@ -309,6 +311,8 @@ class World {
               );
               this.npcs.set(guardNpcId, {
                 id: guardNpcId,
+                settlementId: null,
+                cultureId,
                 x: ntx * TILE_SIZE + TILE_SIZE / 2,
                 y: nty * TILE_SIZE + TILE_SIZE / 2,
                 homeX: ntx * TILE_SIZE + TILE_SIZE / 2,
