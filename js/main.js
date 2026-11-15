@@ -43,6 +43,7 @@ const player = {
   inBoat: false,
   activeBoatId: null,
   boardCooldown: 0,
+  drowned: false,
   coins: 45,
   hp: 6,
   maxHp: 6,
@@ -73,6 +74,7 @@ window.addEventListener("keydown", (e) => {
   if (player.hp <= 0) {
     if (e.key === "Enter" || e.key.toLowerCase() === "l") {
       if (storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine)) {
+        player.drowned = false;
         showBanner("SAVE LOADED");
       } else {
         location.reload();
@@ -112,6 +114,7 @@ window.addEventListener("keydown", (e) => {
     if (key === "l") {
       if (storage.hasSave()) {
         const ok = storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine);
+        player.drowned = false;
         showBanner(ok ? "SAVED GAME LOADED" : "LOAD FAILED");
       } else {
         showBanner("NO SAVED GAME FOUND");
@@ -236,7 +239,6 @@ function findAdjacentShoreTile(preferDx = 0, preferDy = 0) {
   const baseTx = Math.floor(player.x / TILE_SIZE);
   const baseTy = Math.floor(player.y / TILE_SIZE);
 
-  // Check directional probe tile first if moving
   if (preferDx !== 0 || preferDy !== 0) {
     const probeTx = Math.floor((player.x + preferDx * 11) / TILE_SIZE);
     const probeTy = Math.floor((player.y + preferDy * 11) / TILE_SIZE);
@@ -245,7 +247,6 @@ function findAdjacentShoreTile(preferDx = 0, preferDy = 0) {
     }
   }
 
-  // Check all 8 surrounding tiles sorted by closeness to player
   let best = null;
   let bestDist = Infinity;
   for (let dy = -1; dy <= 1; dy++) {
@@ -270,9 +271,10 @@ function findAdjacentShoreTile(preferDx = 0, preferDy = 0) {
 function boardBoat(boat) {
   player.inBoat = true;
   player.activeBoatId = boat.id;
+  player.drowned = false;
   player.x = boat.x;
   player.y = boat.y;
-  showBanner("BOARDED BOAT - STEER ONTO SHORE OR PRESS [E] TO LAND");
+  showBanner("BOARDED BOAT - STEER ONTO SHORE OR PRESS [E] TO EXIT");
 }
 
 function disembarkToTile(shoreTile) {
@@ -291,6 +293,18 @@ function disembarkToTile(shoreTile) {
   showBanner("DISEMBARKED ON SHORE");
 }
 
+function abandonShipAndDrown() {
+  const boat = world.boats.get(player.activeBoatId);
+  if (boat) {
+    boat.x = player.x;
+    boat.y = player.y;
+  }
+  player.inBoat = false;
+  player.activeBoatId = null;
+  player.drowned = true;
+  player.hp = 0;
+}
+
 function handleInteract() {
   if (interior.activeRoom) {
     const resident = findNearbyNpc(22);
@@ -305,7 +319,7 @@ function handleInteract() {
     if (shore) {
       disembarkToTile(shore);
     } else {
-      showBanner("SAIL CLOSER TO SHORE TO DISEMBARK");
+      abandonShipAndDrown();
     }
     return;
   }
@@ -472,13 +486,11 @@ function update(dt) {
           boat.y = player.y;
         }
       } else {
-        // Check if steering into walkable shore tile
         const probeTx = Math.floor((player.x + vx * 10) / TILE_SIZE);
         const probeTy = Math.floor((player.y + vy * 10) / TILE_SIZE);
         if (world.isLandWalkable(probeTx, probeTy)) {
           disembarkToTile({ tx: probeTx, ty: probeTy });
         } else {
-          // Slide along coastline
           if (canMoveTo(nextX, player.y, "water")) player.x = nextX;
           if (canMoveTo(player.x, nextY, "water")) player.y = nextY;
           if (boat) {
@@ -735,13 +747,14 @@ function drawGameOverScreen() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = "14px monospace";
-  ctx.fillStyle = "#ef4444";
-  ctx.fillText("TRAVELER HAS FALLEN", VIEW_WIDTH / 2, VIEW_HEIGHT / 2 - 24);
+  ctx.fillStyle = player.drowned ? "#38bdf8" : "#ef4444";
+  const headline = player.drowned ? "TRAVELER DROWNED AT SEA" : "TRAVELER HAS FALLEN";
+  ctx.fillText(headline, VIEW_WIDTH / 2, VIEW_HEIGHT / 2 - 24);
 
   ctx.font = "8px monospace";
   ctx.fillStyle = "#e2e8f0";
   const prompt = storage.hasSave()
-    ? "PRESS [ENTER] TO RELOAD SAVED GAME"
+    ? "PRESS [ENTER] TO RETURN TO LAST SAVE"
     : "PRESS [ENTER] TO BEGIN A NEW JOURNEY";
   ctx.fillText(prompt, VIEW_WIDTH / 2, VIEW_HEIGHT / 2 + 8);
   ctx.textAlign = "left";
@@ -764,11 +777,15 @@ function drawHUD() {
   ctx.fillText(`[I] [M] [E] [SPC] [K]SAVE`, VIEW_WIDTH - 128, 8);
 
   if (player.inBoat && !dialogue.activeNpc) {
+    ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
     if (findAdjacentShoreTile()) {
-      ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
       ctx.fillRect(54, VIEW_HEIGHT - 22, VIEW_WIDTH - 108, 16);
       ctx.fillStyle = "#38bdf8";
       ctx.fillText(`[E] DISEMBARK ON SHORE`, 76, VIEW_HEIGHT - 14);
+    } else {
+      ctx.fillRect(46, VIEW_HEIGHT - 22, VIEW_WIDTH - 92, 16);
+      ctx.fillStyle = "#f87171";
+      ctx.fillText(`[E] ABANDON SHIP (DROWN)`, 68, VIEW_HEIGHT - 14);
     }
   } else if (!player.inBoat && !dialogue.activeNpc) {
     const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
