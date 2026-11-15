@@ -28,6 +28,8 @@ class World {
     this.detailNoise = new ValueNoise2D(seed + 1013);
     this.forestNoise = new ValueNoise2D(seed + 2027);
     this.chunks = new Map();
+    this.boats = new Map();
+    this.spawnedChunkBoats = new Set();
   }
 
   getElevation(tx, ty) {
@@ -60,9 +62,14 @@ class World {
     return TILES.GRASS;
   }
 
-  isWalkable(tx, ty) {
+  isLandWalkable(tx, ty) {
     const tile = this.getTile(tx, ty);
-    return tile !== TILES.DEEP_OCEAN && tile !== TILES.SHOAL && tile !== TILES.HILL;
+    return tile === TILES.SAND || tile === TILES.GRASS || tile === TILES.FOREST || tile === TILES.ROAD;
+  }
+
+  isWaterNavigable(tx, ty) {
+    const tile = this.getTile(tx, ty);
+    return tile === TILES.DEEP_OCEAN || tile === TILES.SHOAL;
   }
 
   chunkKey(cx, cy) {
@@ -84,7 +91,84 @@ class World {
 
     const chunk = { cx, cy, tiles };
     this.chunks.set(this.chunkKey(cx, cy), chunk);
+    this.spawnBoatsForChunk(cx, cy, tiles);
     return chunk;
+  }
+
+  spawnBoatsForChunk(cx, cy, tiles) {
+    const key = this.chunkKey(cx, cy);
+    if (this.spawnedChunkBoats.has(key)) return;
+    this.spawnedChunkBoats.add(key);
+
+    const rng = new SeededRandom(hashCoords(this.seed + 5501, cx, cy));
+    if (cx !== 0 || cy !== 0) {
+      if (rng.next() > 0.42) return;
+    }
+
+    const candidates = [];
+    for (let ly = 1; ly < CHUNK_SIZE - 1; ly++) {
+      for (let lx = 1; lx < CHUNK_SIZE - 1; lx++) {
+        const t = tiles[ly * CHUNK_SIZE + lx];
+        if (t !== TILES.SHOAL) continue;
+
+        const neighbors = [
+          tiles[(ly - 1) * CHUNK_SIZE + lx],
+          tiles[(ly + 1) * CHUNK_SIZE + lx],
+          tiles[ly * CHUNK_SIZE + (lx - 1)],
+          tiles[ly * CHUNK_SIZE + (lx + 1)]
+        ];
+        const hasBeach = neighbors.includes(TILES.SAND);
+        const hasDeepWater = neighbors.includes(TILES.DEEP_OCEAN) || neighbors.filter(n => n === TILES.SHOAL).length >= 2;
+
+        if (hasBeach && hasDeepWater) {
+          candidates.push({
+            tx: cx * CHUNK_SIZE + lx,
+            ty: cy * CHUNK_SIZE + ly,
+            lx,
+            ly
+          });
+        }
+      }
+    }
+
+    if (candidates.length === 0) return;
+
+    const spot = candidates[rng.int(0, candidates.length - 1)];
+    const boatId = `boat_${cx}_${cy}`;
+    if (this.boats.has(boatId)) return;
+
+    const guarded = (cx === 0 && cy === 0) ? false : rng.next() < 0.45;
+    let guardPos = null;
+
+    if (guarded) {
+      const dirs = [
+        { dx: 0, dy: -1 },
+        { dx: 0, dy: 1 },
+        { dx: -1, dy: 0 },
+        { dx: 1, dy: 0 }
+      ];
+      for (const d of dirs) {
+        const ntx = spot.tx + d.dx;
+        const nty = spot.ty + d.dy;
+        const nTile = this.getTileType(ntx, nty);
+        if (nTile === TILES.SAND || nTile === TILES.GRASS) {
+          guardPos = {
+            x: ntx * TILE_SIZE + TILE_SIZE / 2,
+            y: nty * TILE_SIZE + TILE_SIZE / 2
+          };
+          break;
+        }
+      }
+    }
+
+    this.boats.set(boatId, {
+      id: boatId,
+      x: spot.tx * TILE_SIZE + TILE_SIZE / 2,
+      y: spot.ty * TILE_SIZE + TILE_SIZE / 2,
+      guarded: guarded && guardPos !== null,
+      fee: 15,
+      guardPos
+    });
   }
 
   getChunk(cx, cy) {
