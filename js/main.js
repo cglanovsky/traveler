@@ -21,6 +21,7 @@ resizeCanvas();
 const WORLD_SEED = 48151623;
 const cultureEngine = new CultureEngine(WORLD_SEED);
 const world = new World(WORLD_SEED, cultureEngine);
+const interior = new InteriorManager(WORLD_SEED, cultureEngine);
 const worldMap = new WorldMap(world);
 const spawn = world.findSpawnTile();
 
@@ -53,7 +54,9 @@ window.addEventListener("keydown", (e) => {
 
   if (key === "m" || key === "tab") {
     e.preventDefault();
-    worldMap.toggle(player.x, player.y);
+    const mapX = interior.activeRoom && interior.returnPos ? interior.returnPos.x : player.x;
+    const mapY = interior.activeRoom && interior.returnPos ? interior.returnPos.y : player.y;
+    worldMap.toggle(mapX, mapY);
   }
 
   if (worldMap.isOpen) {
@@ -92,6 +95,10 @@ function findNearbyBoat(maxDist = 22) {
 }
 
 function findNearbyNpc(maxDist = 22) {
+  if (interior.activeRoom) {
+    return interior.findNearbyResident(player, maxDist);
+  }
+
   let closest = null;
   let bestDist = maxDist;
   for (const npc of world.npcs.values()) {
@@ -113,6 +120,14 @@ function boardBoat(boat) {
 }
 
 function handleInteract() {
+  if (interior.activeRoom) {
+    const resident = findNearbyNpc(22);
+    if (resident) {
+      showBanner(`${resident.profile.name.toUpperCase()}: WELCOME TO MY HOME!`);
+    }
+    return;
+  }
+
   if (player.inBoat) return;
 
   const boat = findNearbyBoat(24);
@@ -152,6 +167,7 @@ function canMoveTo(nextX, nextY, mode) {
   for (const c of corners) {
     const tx = Math.floor(c.x / TILE_SIZE);
     const ty = Math.floor(c.y / TILE_SIZE);
+    if (mode === "interior" && !interior.isWalkable(tx, ty)) return false;
     if (mode === "land" && !world.isLandWalkable(tx, ty)) return false;
     if (mode === "water" && !world.isWaterNavigable(tx, ty)) return false;
   }
@@ -177,6 +193,40 @@ function update(dt) {
     return;
   }
 
+  // Interior Mode Update
+  if (interior.activeRoom) {
+    interior.updateResidents(dt);
+
+    if (vx !== 0 || vy !== 0) {
+      const len = Math.hypot(vx, vy);
+      vx /= len;
+      vy /= len;
+
+      if (Math.abs(vx) > Math.abs(vy)) {
+        player.facing = vx > 0 ? "right" : "left";
+      } else {
+        player.facing = vy > 0 ? "down" : "up";
+      }
+
+      const moveX = vx * player.speed * dt;
+      const moveY = vy * player.speed * dt;
+      if (canMoveTo(player.x + moveX, player.y, "interior")) player.x += moveX;
+      if (canMoveTo(player.x, player.y + moveY, "interior")) player.y += moveY;
+      player.walkTimer += dt * 8;
+
+      const pTx = Math.floor(player.x / TILE_SIZE);
+      const pTy = Math.floor(player.y / TILE_SIZE);
+      if (pTx === interior.activeRoom.exitX && pTy === interior.activeRoom.exitY) {
+        interior.exitBuilding(player);
+        showBanner("STEPPED OUTSIDE");
+      }
+    } else {
+      player.walkTimer = 0;
+    }
+    return;
+  }
+
+  // Overworld Mode Update
   world.updateNpcs(dt);
 
   if (vx !== 0 || vy !== 0) {
@@ -201,6 +251,18 @@ function update(dt) {
       const touchBoat = findNearbyBoat(14);
       if (touchBoat && !touchBoat.guarded) {
         boardBoat(touchBoat);
+      }
+
+      const pTx = Math.floor(player.x / TILE_SIZE);
+      const pTy = Math.floor(player.y / TILE_SIZE);
+      if (world.getTile(pTx, pTy) === TILES.DOOR) {
+        const bld = world.getBuildingByDoor(pTx, pTy);
+        if (bld) {
+          interior.enterBuilding(bld, player);
+          const count = interior.activeRoom.residents.length;
+          showBanner(`ENTERED DWELLING (${count} RESIDENT${count === 1 ? "" : "S"})`);
+          return;
+        }
       }
     } else {
       const nextX = player.x + moveX;
@@ -353,7 +415,7 @@ function drawNpc(npc, screenX, screenY) {
 }
 
 function drawPlayer(screenX, screenY) {
-  if (player.inBoat) {
+  if (player.inBoat && !interior.activeRoom) {
     drawBoat(screenX, screenY, player.facing);
     ctx.fillStyle = "#2b6cb0";
     ctx.fillRect(Math.round(screenX - 2), Math.round(screenY - 4), 4, 4);
@@ -401,12 +463,16 @@ function drawHUD() {
   ctx.font = "8px monospace";
   ctx.textBaseline = "middle";
 
-  const modeLabel = player.inBoat ? "SAILING" : "ON FOOT";
+  const modeLabel = interior.activeRoom
+    ? "INDOORS"
+    : player.inBoat
+    ? "SAILING"
+    : "ON FOOT";
   ctx.fillText(`COINS:${player.coins}  ${modeLabel}`, 6, 8);
   ctx.fillText(`[M] MAP  [E] INTERACT`, VIEW_WIDTH - 106, 8);
 
   if (!player.inBoat) {
-    const nearBoat = findNearbyBoat(24);
+    const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
     const nearNpc = findNearbyNpc(22);
 
     if (nearBoat && nearBoat.guarded) {
@@ -436,6 +502,13 @@ function render() {
 
   if (worldMap.isOpen) {
     worldMap.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player);
+    ctx.restore();
+    return;
+  }
+
+  if (interior.activeRoom) {
+    interior.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player, drawPlayer);
+    drawHUD();
     ctx.restore();
     return;
   }
