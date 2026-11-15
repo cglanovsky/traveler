@@ -19,7 +19,8 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 const WORLD_SEED = 48151623;
-const world = new World(WORLD_SEED);
+const cultureEngine = new CultureEngine(WORLD_SEED);
+const world = new World(WORLD_SEED, cultureEngine);
 const worldMap = new WorldMap(world);
 const spawn = world.findSpawnTile();
 
@@ -37,8 +38,9 @@ const player = {
   coins: 30
 };
 
+let currentSettlementId = null;
 let statusBanner = { text: "", timer: 0 };
-function showBanner(text, duration = 2.5) {
+function showBanner(text, duration = 2.6) {
   statusBanner = { text, timer: duration };
 }
 
@@ -89,6 +91,19 @@ function findNearbyBoat(maxDist = 22) {
   return closest;
 }
 
+function findNearbyNpc(maxDist = 22) {
+  let closest = null;
+  let bestDist = maxDist;
+  for (const npc of world.npcs.values()) {
+    const dist = Math.hypot(npc.x - player.x, npc.y - player.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      closest = npc;
+    }
+  }
+  return closest;
+}
+
 function boardBoat(boat) {
   player.inBoat = true;
   player.activeBoatId = boat.id;
@@ -101,17 +116,25 @@ function handleInteract() {
   if (player.inBoat) return;
 
   const boat = findNearbyBoat(24);
-  if (!boat) return;
+  if (boat) {
+    if (!boat.guarded) {
+      boardBoat(boat);
+      return;
+    } else if (player.coins >= boat.fee) {
+      player.coins -= boat.fee;
+      boat.guarded = false;
+      showBanner(`PAID ${boat.fee} COINS TO BOATKEEPER`);
+      boardBoat(boat);
+      return;
+    } else {
+      showBanner(`BOATKEEPER WANTS ${boat.fee} COINS`);
+      return;
+    }
+  }
 
-  if (!boat.guarded) {
-    boardBoat(boat);
-  } else if (player.coins >= boat.fee) {
-    player.coins -= boat.fee;
-    boat.guarded = false;
-    showBanner(`PAID ${boat.fee} COINS TO BOATKEEPER`);
-    boardBoat(boat);
-  } else {
-    showBanner(`BOATKEEPER WANTS ${boat.fee} COINS`);
+  const npc = findNearbyNpc(22);
+  if (npc) {
+    showBanner(`${npc.profile.name.toUpperCase()}: GREETINGS, TRAVELER!`);
   }
 }
 
@@ -153,6 +176,8 @@ function update(dt) {
     worldMap.panY += vy * panSpeed * dt;
     return;
   }
+
+  world.updateNpcs(dt);
 
   if (vx !== 0 || vy !== 0) {
     const len = Math.hypot(vx, vy);
@@ -215,6 +240,16 @@ function update(dt) {
     player.walkTimer = 0;
   }
 
+  const pTx = Math.floor(player.x / TILE_SIZE);
+  const pTy = Math.floor(player.y / TILE_SIZE);
+  const nearSet = world.getNearbySettlement(pTx, pTy, 18);
+  if (nearSet && nearSet.id !== currentSettlementId) {
+    currentSettlementId = nearSet.id;
+    showBanner(`ENTERING ${nearSet.name.toUpperCase()}`);
+  } else if (!nearSet) {
+    currentSettlementId = null;
+  }
+
   const playerCx = Math.floor(player.x / (CHUNK_SIZE * TILE_SIZE));
   const playerCy = Math.floor(player.y / (CHUNK_SIZE * TILE_SIZE));
   world.pruneChunks(playerCx, playerCy, 4);
@@ -248,6 +283,32 @@ function drawTileDetail(screenX, screenY, tile, tx, ty) {
     ctx.fillRect(screenX + 2, screenY + 5, 12, 9);
     ctx.fillStyle = "#9da1a1";
     ctx.fillRect(screenX + 4, screenY + 3, 8, 4);
+  } else if (tile === TILES.ROAD && hash % 5 === 0) {
+    ctx.fillStyle = "#9c7c54";
+    ctx.fillRect(screenX + 4, screenY + 6, 3, 2);
+    ctx.fillRect(screenX + 10, screenY + 11, 2, 2);
+  } else if (tile === TILES.ROOF) {
+    const bld = world.getBuildingAtTile(tx, ty);
+    ctx.fillStyle = bld ? bld.roofColor : TILE_COLORS[TILES.ROOF];
+    ctx.fillRect(screenX, screenY, TILE_SIZE, TILE_SIZE);
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(screenX, screenY + 12, TILE_SIZE, 4);
+  } else if (tile === TILES.WALL) {
+    const bld = world.getBuildingAtTile(tx, ty);
+    ctx.fillStyle = bld ? bld.wallColor : TILE_COLORS[TILES.WALL];
+    ctx.fillRect(screenX, screenY, TILE_SIZE, TILE_SIZE);
+    ctx.fillStyle = "#1e293b";
+    ctx.fillRect(screenX + 5, screenY + 5, 6, 5);
+    ctx.fillStyle = "#fef08a";
+    ctx.fillRect(screenX + 6, screenY + 6, 4, 3);
+  } else if (tile === TILES.DOOR) {
+    const bld = world.getBuildingAtTile(tx, ty);
+    ctx.fillStyle = bld ? bld.wallColor : TILE_COLORS[TILES.WALL];
+    ctx.fillRect(screenX, screenY, TILE_SIZE, TILE_SIZE);
+    ctx.fillStyle = "#451a03";
+    ctx.fillRect(screenX + 3, screenY + 2, 10, 14);
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillRect(screenX + 10, screenY + 9, 2, 2);
   }
 }
 
@@ -273,19 +334,22 @@ function drawBoat(screenX, screenY, facing = "down") {
   }
 }
 
-function drawBoatkeeper(screenX, screenY) {
-  const gx = Math.round(screenX - 8);
-  const gy = Math.round(screenY - 8);
+function drawNpc(npc, screenX, screenY) {
+  const sheet = cultureEngine.getNpcSpriteSheet(npc.profile);
+  const dirIndex = { down: 0, up: 1, left: 2, right: 3 }[npc.facing] || 0;
+  const frameIndex = Math.sin(npc.walkTimer) > 0 ? 1 : 0;
 
-  ctx.fillStyle = "#d97706";
-  ctx.fillRect(gx + 4, gy + 7, 8, 6);
-  ctx.fillStyle = "#e0ac69";
-  ctx.fillRect(gx + 4, gy + 2, 8, 6);
-  ctx.fillStyle = "#1e3a8a";
-  ctx.fillRect(gx + 3, gy + 1, 10, 3);
-  ctx.fillStyle = "#111827";
-  ctx.fillRect(gx + 5, gy + 5, 2, 2);
-  ctx.fillRect(gx + 9, gy + 5, 2, 2);
+  ctx.drawImage(
+    sheet,
+    dirIndex * 16,
+    frameIndex * 16,
+    16,
+    16,
+    Math.round(screenX - 8),
+    Math.round(screenY - 8),
+    16,
+    16
+  );
 }
 
 function drawPlayer(screenX, screenY) {
@@ -343,11 +407,18 @@ function drawHUD() {
 
   if (!player.inBoat) {
     const nearBoat = findNearbyBoat(24);
+    const nearNpc = findNearbyNpc(22);
+
     if (nearBoat && nearBoat.guarded) {
       ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
       ctx.fillRect(46, VIEW_HEIGHT - 22, VIEW_WIDTH - 92, 16);
       ctx.fillStyle = "#fbbf24";
       ctx.fillText(`[E] HIRE BOAT (${nearBoat.fee} COINS)`, 66, VIEW_HEIGHT - 14);
+    } else if (nearNpc) {
+      ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
+      ctx.fillRect(54, VIEW_HEIGHT - 22, VIEW_WIDTH - 108, 16);
+      ctx.fillStyle = "#a7f3d0";
+      ctx.fillText(`[E] TALK TO ${nearNpc.profile.name.toUpperCase()}`, 66, VIEW_HEIGHT - 14);
     }
   }
 
@@ -396,12 +467,13 @@ function render() {
     if (bx >= -16 && bx <= VIEW_WIDTH + 16 && by >= -16 && by <= VIEW_HEIGHT + 16) {
       drawBoat(bx, by);
     }
-    if (boat.guarded && boat.guardPos) {
-      const gx = boat.guardPos.x - camX;
-      const gy = boat.guardPos.y - camY;
-      if (gx >= -16 && gx <= VIEW_WIDTH + 16 && gy >= -16 && gy <= VIEW_HEIGHT + 16) {
-        drawBoatkeeper(gx, gy);
-      }
+  }
+
+  for (const npc of world.npcs.values()) {
+    const nx = npc.x - camX;
+    const ny = npc.y - camY;
+    if (nx >= -16 && nx <= VIEW_WIDTH + 16 && ny >= -16 && ny <= VIEW_HEIGHT + 16) {
+      drawNpc(npc, nx, ny);
     }
   }
 
