@@ -20,14 +20,18 @@ resizeCanvas();
 
 const WORLD_SEED = 48151623;
 const cultureEngine = new CultureEngine(WORLD_SEED);
+const artifactEngine = new ArtifactEngine(WORLD_SEED);
 const world = new World(WORLD_SEED, cultureEngine);
 const interior = new InteriorManager(WORLD_SEED, cultureEngine);
 const worldMap = new WorldMap(world);
+const dialogue = new DialogueSystem(WORLD_SEED, world, worldMap, artifactEngine);
 const spawn = world.findSpawnTile();
 
 const player = {
   x: spawn.tx * TILE_SIZE + TILE_SIZE / 2,
   y: spawn.ty * TILE_SIZE + TILE_SIZE / 2,
+  overworldX: spawn.tx * TILE_SIZE + TILE_SIZE / 2,
+  overworldY: spawn.ty * TILE_SIZE + TILE_SIZE / 2,
   width: 12,
   height: 12,
   speed: 68,
@@ -36,7 +40,20 @@ const player = {
   walkTimer: 0,
   inBoat: false,
   activeBoatId: null,
-  coins: 30
+  coins: 45,
+  hp: 4,
+  maxHp: 6,
+  inventory: [
+    artifactEngine.generateArtifact(WORLD_SEED + 11),
+    artifactEngine.generateArtifact(WORLD_SEED + 29)
+  ]
+};
+
+const inventoryUI = {
+  isOpen: false,
+  selectedIndex: 0,
+  renaming: false,
+  draftName: ""
 };
 
 let currentSettlementId = null;
@@ -49,9 +66,78 @@ worldMap.discoverAround(player.x, player.y, 16);
 
 const keys = new Set();
 window.addEventListener("keydown", (e) => {
+  // Handle typing while renaming an artifact
+  if (inventoryUI.isOpen && inventoryUI.renaming) {
+    e.preventDefault();
+    if (e.key === "Enter") {
+      const item = player.inventory[inventoryUI.selectedIndex];
+      if (item) {
+        item.customName = inventoryUI.draftName.trim() || null;
+        showBanner(`RENAMED TO "${artifactEngine.getDisplayName(item).toUpperCase()}"`);
+      }
+      inventoryUI.renaming = false;
+    } else if (e.key === "Escape") {
+      inventoryUI.renaming = false;
+    } else if (e.key === "Backspace") {
+      inventoryUI.draftName = inventoryUI.draftName.slice(0, -1);
+    } else if (e.key.length === 1 && inventoryUI.draftName.length < 22) {
+      inventoryUI.draftName += e.key;
+    }
+    return;
+  }
+
   const key = e.key.toLowerCase();
   keys.add(key);
 
+  // Dialogue Navigation
+  if (dialogue.activeNpc) {
+    if (key === "w" || key === "arrowup") {
+      const max = dialogue.mode === "menu"
+        ? dialogue.options.length
+        : dialogue.mode === "trade_sell"
+        ? player.inventory.length + 1
+        : dialogue.tradeItems.length + 1;
+      dialogue.selectedIndex = (dialogue.selectedIndex - 1 + max) % max;
+    } else if (key === "s" || key === "arrowdown") {
+      const max = dialogue.mode === "menu"
+        ? dialogue.options.length
+        : dialogue.mode === "trade_sell"
+        ? player.inventory.length + 1
+        : dialogue.tradeItems.length + 1;
+      dialogue.selectedIndex = (dialogue.selectedIndex + 1) % max;
+    } else if (key === "e" || key === " " || key === "enter") {
+      dialogue.selectOption(player);
+    } else if (key === "escape") {
+      dialogue.close();
+    }
+    return;
+  }
+
+  // Inventory Toggle
+  if (key === "i") {
+    if (worldMap.isOpen) worldMap.isOpen = false;
+    inventoryUI.isOpen = !inventoryUI.isOpen;
+    inventoryUI.renaming = false;
+    inventoryUI.selectedIndex = Math.min(inventoryUI.selectedIndex, Math.max(0, player.inventory.length - 1));
+    return;
+  }
+
+  if (inventoryUI.isOpen) {
+    if (key === "escape") {
+      inventoryUI.isOpen = false;
+    } else if ((key === "a" || key === "arrowleft") && player.inventory.length > 0) {
+      inventoryUI.selectedIndex = (inventoryUI.selectedIndex - 1 + player.inventory.length) % player.inventory.length;
+    } else if ((key === "d" || key === "arrowright") && player.inventory.length > 0) {
+      inventoryUI.selectedIndex = (inventoryUI.selectedIndex + 1) % player.inventory.length;
+    } else if (key === "r" && player.inventory.length > 0) {
+      const item = player.inventory[inventoryUI.selectedIndex];
+      inventoryUI.renaming = true;
+      inventoryUI.draftName = item.customName || "";
+    }
+    return;
+  }
+
+  // Map Toggle
   if (key === "m" || key === "tab") {
     e.preventDefault();
     const mapX = interior.activeRoom && interior.returnPos ? interior.returnPos.x : player.x;
@@ -123,7 +209,7 @@ function handleInteract() {
   if (interior.activeRoom) {
     const resident = findNearbyNpc(22);
     if (resident) {
-      showBanner(`${resident.profile.name.toUpperCase()}: WELCOME TO MY HOME!`);
+      dialogue.open(resident, player);
     }
     return;
   }
@@ -149,7 +235,7 @@ function handleInteract() {
 
   const npc = findNearbyNpc(22);
   if (npc) {
-    showBanner(`${npc.profile.name.toUpperCase()}: GREETINGS, TRAVELER!`);
+    dialogue.open(npc, player);
   }
 }
 
@@ -179,6 +265,10 @@ function update(dt) {
     statusBanner.timer -= dt;
   }
 
+  if (dialogue.activeNpc || inventoryUI.isOpen) {
+    return;
+  }
+
   let vx = 0;
   let vy = 0;
   if (keys.has("w") || keys.has("arrowup")) vy -= 1;
@@ -193,7 +283,6 @@ function update(dt) {
     return;
   }
 
-  // Interior Mode Update
   if (interior.activeRoom) {
     interior.updateResidents(dt);
 
@@ -226,7 +315,6 @@ function update(dt) {
     return;
   }
 
-  // Overworld Mode Update
   world.updateNpcs(dt);
 
   if (vx !== 0 || vy !== 0) {
@@ -296,6 +384,8 @@ function update(dt) {
       }
     }
 
+    player.overworldX = player.x;
+    player.overworldY = player.y;
     player.walkTimer += dt * 8;
     worldMap.discoverAround(player.x, player.y, player.inBoat ? 22 : 16);
   } else {
@@ -455,23 +545,96 @@ function drawPlayer(screenX, screenY) {
   }
 }
 
-function drawHUD() {
-  ctx.fillStyle = "rgba(11, 19, 32, 0.82)";
-  ctx.fillRect(0, 0, VIEW_WIDTH, 16);
+function drawInventoryScreen() {
+  ctx.fillStyle = "#0a0f1a";
+  ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+
+  ctx.strokeStyle = "#3b82f6";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(10.5, 18.5, VIEW_WIDTH - 21, VIEW_HEIGHT - 34);
 
   ctx.fillStyle = "#e2e8f0";
   ctx.font = "8px monospace";
   ctx.textBaseline = "middle";
+  ctx.fillText(`ARTIFACT SATCHEL (${player.inventory.length})   COINS:${player.coins}`, 12, 10);
+  ctx.fillText(`[A/D] SELECT   [R] RENAME   [I] CLOSE`, 12, VIEW_HEIGHT - 8);
 
-  const modeLabel = interior.activeRoom
-    ? "INDOORS"
-    : player.inBoat
-    ? "SAILING"
-    : "ON FOOT";
-  ctx.fillText(`COINS:${player.coins}  ${modeLabel}`, 6, 8);
-  ctx.fillText(`[M] MAP  [E] INTERACT`, VIEW_WIDTH - 106, 8);
+  if (player.inventory.length === 0) {
+    ctx.fillStyle = "#94a3b8";
+    ctx.fillText("No artifacts carried.", 96, 115);
+    return;
+  }
 
-  if (!player.inBoat) {
+  // Grid of carried artifacts
+  const cols = 6;
+  for (let i = 0; i < player.inventory.length; i++) {
+    const item = player.inventory[i];
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const sx = 22 + col * 46;
+    const sy = 28 + row * 34;
+
+    ctx.fillStyle = i === inventoryUI.selectedIndex ? "#1e3a8a" : "#1e293b";
+    ctx.fillRect(sx, sy, 36, 28);
+    if (i === inventoryUI.selectedIndex) {
+      ctx.strokeStyle = "#fde047";
+      ctx.strokeRect(sx + 0.5, sy + 0.5, 35, 27);
+    }
+
+    const spr = artifactEngine.getSprite(item);
+    ctx.drawImage(spr, sx + 6, sy + 2, 24, 24);
+  }
+
+  // Inspector Panel at bottom
+  const selected = player.inventory[inventoryUI.selectedIndex];
+  if (selected) {
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(16, 128, VIEW_WIDTH - 32, 72);
+    ctx.strokeStyle = "#475569";
+    ctx.strokeRect(16.5, 128.5, VIEW_WIDTH - 33, 71);
+
+    const spr = artifactEngine.getSprite(selected);
+    ctx.drawImage(spr, 24, 138, 48, 48);
+
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#fde047";
+    ctx.fillText(artifactEngine.getDisplayName(selected), 82, 136);
+
+    ctx.fillStyle = "#94a3b8";
+    ctx.fillText(`SYMMETRY: ${selected.symmetry.toUpperCase()}`, 82, 148);
+    ctx.fillText(`BASE VALUE: ${selected.baseValue} COINS`, 82, 160);
+
+    if (inventoryUI.renaming) {
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(82, 174, 206, 16);
+      ctx.strokeStyle = "#fde047";
+      ctx.strokeRect(82.5, 174.5, 205, 15);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(`NAME: ${inventoryUI.draftName}_`, 86, 178);
+    } else {
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillText(`PRESS [R] TO ASSIGN CUSTOM NAME`, 82, 178);
+    }
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
+  ctx.fillRect(0, 0, VIEW_WIDTH, 16);
+
+  // Hearts
+  for (let i = 0; i < player.maxHp; i++) {
+    ctx.fillStyle = i < player.hp ? "#ef4444" : "#334155";
+    ctx.fillRect(6 + i * 7, 5, 5, 5);
+  }
+
+  ctx.fillStyle = "#e2e8f0";
+  ctx.font = "8px monospace";
+  ctx.textBaseline = "middle";
+  ctx.fillText(`COINS:${player.coins}`, 54, 8);
+  ctx.fillText(`[I] ITEMS [M] MAP [E] TALK`, VIEW_WIDTH - 134, 8);
+
+  if (!player.inBoat && !dialogue.activeNpc) {
     const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
     const nearNpc = findNearbyNpc(22);
 
@@ -500,6 +663,12 @@ function render() {
   ctx.save();
   ctx.scale(renderScale, renderScale);
 
+  if (inventoryUI.isOpen) {
+    drawInventoryScreen();
+    ctx.restore();
+    return;
+  }
+
   if (worldMap.isOpen) {
     worldMap.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player);
     ctx.restore();
@@ -509,6 +678,9 @@ function render() {
   if (interior.activeRoom) {
     interior.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player, drawPlayer);
     drawHUD();
+    if (dialogue.activeNpc) {
+      dialogue.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player);
+    }
     ctx.restore();
     return;
   }
@@ -552,6 +724,10 @@ function render() {
 
   drawPlayer(player.x - camX, player.y - camY);
   drawHUD();
+
+  if (dialogue.activeNpc) {
+    dialogue.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player);
+  }
 
   ctx.restore();
 }
