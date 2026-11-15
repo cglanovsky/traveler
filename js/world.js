@@ -97,7 +97,6 @@ class World {
     const startTx = cx * CHUNK_SIZE;
     const startTy = cy * CHUNK_SIZE;
 
-    // 3x3 building footprint: top 2 rows roof/wall, bottom row wall + center door
     for (let dy = 0; dy < 3; dy++) {
       for (let dx = 0; dx < 3; dx++) {
         const idx = (ly + dy) * CHUNK_SIZE + (lx + dx);
@@ -117,6 +116,7 @@ class World {
     this.buildings.set(buildingId, {
       id: buildingId,
       settlementId,
+      cultureId: culture.id,
       tx: startTx + lx,
       ty: startTy + ly,
       doorTx,
@@ -125,7 +125,6 @@ class World {
       wallColor: culture.wallColor
     });
 
-    // Clear a small front step path
     if (ly + 3 < CHUNK_SIZE) {
       const frontIdx = (ly + 3) * CHUNK_SIZE + (lx + 1);
       if (tiles[frontIdx] === TILES.FOREST || tiles[frontIdx] === TILES.GRASS) {
@@ -177,7 +176,6 @@ class World {
     const cultureId = this.culture.getCultureId(startTx + 16, startTy + 16);
     const culture = this.culture.getCultureVector(cultureId);
 
-    // Count walkable land tiles in this chunk
     let landCount = 0;
     for (let i = 0; i < tiles.length; i++) {
       if (tiles[i] === TILES.GRASS || tiles[i] === TILES.FOREST || tiles[i] === TILES.SAND) {
@@ -185,7 +183,6 @@ class World {
       }
     }
 
-    // 1. Settlements vs. Isolated Wilderness Huts
     const isStarterChunk = cx === 0 && cy === 0;
     if (landCount > 480 && (isStarterChunk || rng.next() < 0.28)) {
       const settlementId = `set_${cx}_${cy}`;
@@ -227,7 +224,6 @@ class World {
           cultureId
         });
 
-        // Spawn 2 to 4 cultural villagers wandering the settlement
         const villagerCount = rng.int(2, 4);
         for (let v = 0; v < villagerCount; v++) {
           const vx = startTx + rng.int(6, CHUNK_SIZE - 6);
@@ -254,7 +250,6 @@ class World {
         }
       }
     } else if (landCount > 220 && rng.next() < 0.35) {
-      // Isolated Wilderness Hut
       for (let attempt = 0; attempt < 15; attempt++) {
         const hx = rng.int(4, CHUNK_SIZE - 8);
         const hy = rng.int(4, CHUNK_SIZE - 8);
@@ -265,7 +260,6 @@ class World {
       }
     }
 
-    // 2. Boats along coastlines
     if (isStarterChunk || rng.next() < 0.42) {
       const candidates = [];
       for (let ly = 1; ly < CHUNK_SIZE - 1; ly++) {
@@ -364,6 +358,15 @@ class World {
   getBuildingAtTile(tx, ty) {
     for (const b of this.buildings.values()) {
       if (tx >= b.tx && tx < b.tx + 3 && ty >= b.ty && ty < b.ty + 3) {
+        return b;
+      }
+    }
+    return null;
+  }
+
+  getBuildingByDoor(tx, ty) {
+    for (const b of this.buildings.values()) {
+      if (b.doorTx === tx && b.doorTy === ty) {
         return b;
       }
     }
