@@ -8,9 +8,10 @@ const INT_TILES = {
 };
 
 class InteriorManager {
-  constructor(worldSeed, cultureEngine) {
+  constructor(worldSeed, cultureEngine, storage) {
     this.worldSeed = worldSeed;
     this.culture = cultureEngine;
+    this.storage = storage;
     this.roomCache = new Map();
     this.activeRoom = null;
     this.returnPos = null;
@@ -177,18 +178,22 @@ class InteriorManager {
     const residentCount = isHut ? rng.int(1, 2) : rng.int(1, 3);
     const residents = [];
     for (let r = 0; r < residentCount; r++) {
+      const npcId = `${building.id}_res_${r}`;
+      if (this.storage.deadNpcs.has(npcId)) continue;
+
       for (let attempt = 0; attempt < 30; attempt++) {
         const rx = rng.int(3, width - 4);
         const ry = rng.int(3, height - 4);
         if (blocked[ry * width + rx] === 0 && Math.hypot(rx - exitX, ry - exitY) > 2) {
-          const npcId = `${building.id}_res_${r}`;
           const profile = this.culture.generateNpcProfile(
             seed + 503 * (r + 1),
             culture,
             "resident"
           );
+          const segments = rng.int(2, 4);
           residents.push({
             id: npcId,
+            role: "resident",
             settlementId: building.settlementId,
             cultureId: building.cultureId,
             x: rx * TILE_SIZE + TILE_SIZE / 2,
@@ -198,6 +203,10 @@ class InteriorManager {
             moveTimer: rng.range(0.8, 2.6),
             vx: 0,
             vy: 0,
+            hostile: false,
+            segments,
+            hp: segments * 2,
+            maxHp: segments * 2,
             profile
           });
           break;
@@ -260,6 +269,8 @@ class InteriorManager {
     if (!room) return;
 
     for (const npc of room.residents) {
+      if (npc.hostile || npc.dead) continue;
+
       npc.moveTimer -= dt;
       if (npc.moveTimer <= 0) {
         npc.moveTimer = 1.4 + Math.random() * 2.4;
@@ -305,6 +316,7 @@ class InteriorManager {
     let closest = null;
     let bestDist = maxDist;
     for (const npc of this.activeRoom.residents) {
+      if (npc.dead || npc.hostile) continue;
       const dist = Math.hypot(npc.x - player.x, npc.y - player.y);
       if (dist < bestDist) {
         bestDist = dist;
@@ -314,7 +326,7 @@ class InteriorManager {
     return closest;
   }
 
-  render(ctx, viewWidth, viewHeight, player, drawPlayerFn) {
+  render(ctx, viewWidth, viewHeight, player, drawPlayerFn, combatSystem) {
     const room = this.activeRoom;
     if (!room) return;
 
@@ -452,9 +464,12 @@ class InteriorManager {
     }
 
     for (const npc of room.residents) {
+      if (npc.dead) continue;
       const sheet = this.culture.getNpcSpriteSheet(npc.profile);
       const dirIndex = { down: 0, up: 1, left: 2, right: 3 }[npc.facing] || 0;
       const frameIndex = Math.sin(npc.walkTimer) > 0 ? 1 : 0;
+      const nx = offsetX + npc.x;
+      const ny = offsetY + npc.y;
 
       ctx.drawImage(
         sheet,
@@ -462,13 +477,15 @@ class InteriorManager {
         frameIndex * 16,
         16,
         16,
-        Math.round(offsetX + npc.x - 8),
-        Math.round(offsetY + npc.y - 8),
+        Math.round(nx - 8),
+        Math.round(ny - 8),
         16,
         16
       );
+      combatSystem.renderHealthBar(ctx, npc, nx, ny);
     }
 
     drawPlayerFn(offsetX + player.x, offsetY + player.y);
+    combatSystem.renderSword(ctx, offsetX + player.x, offsetY + player.y, player.facing);
   }
 }
