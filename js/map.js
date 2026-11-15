@@ -69,6 +69,16 @@ class WorldMap {
     }
   }
 
+  isTileDiscovered(tx, ty) {
+    const cx = Math.floor(tx / CHUNK_SIZE);
+    const cy = Math.floor(ty / CHUNK_SIZE);
+    const entry = this.exploredChunks.get(`${cx},${cy}`);
+    if (!entry) return false;
+    const lx = ((tx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const ly = ((ty % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    return entry.mask[ly * CHUNK_SIZE + lx] === 1;
+  }
+
   toggle(playerX, playerY) {
     this.isOpen = !this.isOpen;
     if (this.isOpen) {
@@ -150,20 +160,35 @@ class WorldMap {
     }
 
     for (const boat of this.world.boats.values()) {
-      const bTx = boat.x / TILE_SIZE;
-      const bTy = boat.y / TILE_SIZE;
-      const cx = Math.floor(bTx / CHUNK_SIZE);
-      const cy = Math.floor(bTy / CHUNK_SIZE);
-      const entry = this.exploredChunks.get(`${cx},${cy}`);
-      if (!entry || entry.discoveredCount === 0) continue;
+      const bTx = Math.floor(boat.x / TILE_SIZE);
+      const bTy = Math.floor(boat.y / TILE_SIZE);
+      if (!this.isTileDiscovered(bTx, bTy)) continue;
 
-      const bx = centerX + (bTx - this.panX) * tilePx;
-      const by = centerY + (bTy - this.panY) * tilePx;
+      const bx = centerX + (boat.x / TILE_SIZE - this.panX) * tilePx;
+      const by = centerY + (boat.y / TILE_SIZE - this.panY) * tilePx;
       if (bx >= mapX && bx <= mapX + mapW && by >= mapY && by <= mapY + mapH) {
         ctx.fillStyle = boat.guarded ? "#f59e0b" : "#38bdf8";
         ctx.fillRect(Math.round(bx - 1), Math.round(by - 1), 3, 3);
       }
     }
+
+    // Discovered Settlement Labels
+    ctx.font = "7px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    for (const settlement of this.world.settlements.values()) {
+      if (!this.isTileDiscovered(settlement.tx, settlement.ty)) continue;
+
+      const sx = centerX + (settlement.tx - this.panX) * tilePx;
+      const sy = centerY + (settlement.ty - this.panY) * tilePx;
+      if (sx >= mapX && sx <= mapX + mapW && sy >= mapY && sy <= mapY + mapH) {
+        ctx.fillStyle = "#0b1320";
+        ctx.fillText(settlement.name, Math.round(sx) + 1, Math.round(sy) - 2);
+        ctx.fillStyle = "#fde047";
+        ctx.fillText(settlement.name, Math.round(sx), Math.round(sy) - 3);
+      }
+    }
+    ctx.textAlign = "left";
 
     const pTx = player.x / TILE_SIZE;
     const pTy = player.y / TILE_SIZE;
