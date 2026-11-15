@@ -42,7 +42,6 @@ const player = {
   walkTimer: 0,
   inBoat: false,
   activeBoatId: null,
-  boardCooldown: 0,
   drowned: false,
   coins: 45,
   hp: 6,
@@ -72,7 +71,7 @@ worldMap.discoverAround(player.x, player.y, 16);
 const keys = new Set();
 window.addEventListener("keydown", (e) => {
   if (player.hp <= 0) {
-    if (e.key === "Enter" || e.key.toLowerCase() === "l") {
+    if (e.key === "Enter" || e.code === "KeyL" || e.key.toLowerCase() === "l") {
       if (storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine)) {
         player.drowned = false;
         showBanner("SAVE LOADED");
@@ -105,13 +104,15 @@ window.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   keys.add(key);
 
+  if (e.repeat) return;
+
   if (!dialogue.activeNpc && !inventoryUI.isOpen) {
-    if (key === "k") {
+    if (e.code === "KeyK" || key === "k") {
       const ok = storage.saveGame(WORLD_SEED, player, world, interior, worldMap, dialogue, artifactEngine);
       showBanner(ok ? "GAME SAVED TO LOCALSTORAGE" : "SAVE FAILED");
       return;
     }
-    if (key === "l") {
+    if (e.code === "KeyL" || key === "l") {
       if (storage.hasSave()) {
         const ok = storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine);
         player.drowned = false;
@@ -138,7 +139,7 @@ window.addEventListener("keydown", (e) => {
         ? player.inventory.length + 1
         : dialogue.tradeItems.length + 1;
       dialogue.selectedIndex = (dialogue.selectedIndex + 1) % max;
-    } else if (key === "e" || key === "enter") {
+    } else if (e.code === "KeyE" || key === "e" || key === "enter") {
       dialogue.selectOption(player);
     } else if (key === "escape") {
       dialogue.close();
@@ -146,7 +147,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (key === "i") {
+  if (e.code === "KeyI" || key === "i") {
     if (worldMap.isOpen) worldMap.isOpen = false;
     inventoryUI.isOpen = !inventoryUI.isOpen;
     inventoryUI.renaming = false;
@@ -161,7 +162,7 @@ window.addEventListener("keydown", (e) => {
       inventoryUI.selectedIndex = (inventoryUI.selectedIndex - 1 + player.inventory.length) % player.inventory.length;
     } else if ((key === "d" || key === "arrowright") && player.inventory.length > 0) {
       inventoryUI.selectedIndex = (inventoryUI.selectedIndex + 1) % player.inventory.length;
-    } else if (key === "r" && player.inventory.length > 0) {
+    } else if ((e.code === "KeyR" || key === "r") && player.inventory.length > 0) {
       const item = player.inventory[inventoryUI.selectedIndex];
       inventoryUI.renaming = true;
       inventoryUI.draftName = item.customName || "";
@@ -169,7 +170,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (key === "m" || key === "tab") {
+  if (e.code === "KeyM" || key === "m" || key === "tab") {
     e.preventDefault();
     const mapX = interior.activeRoom && interior.returnPos ? interior.returnPos.x : player.x;
     const mapY = interior.activeRoom && interior.returnPos ? interior.returnPos.y : player.y;
@@ -183,13 +184,14 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (key === " " || key === "z") {
+  if (e.code === "Space" || e.code === "KeyZ" || key === " " || key === "z") {
     e.preventDefault();
     combat.triggerAttack(player);
     return;
   }
 
-  if (key === "e") {
+  if (e.code === "KeyE" || key === "e") {
+    e.preventDefault();
     handleInteract();
   }
 });
@@ -204,7 +206,7 @@ window.addEventListener("wheel", (e) => {
   worldMap.adjustZoom(e.deltaY < 0 ? 1.25 : 1 / 1.25);
 }, { passive: false });
 
-function findNearbyBoat(maxDist = 22) {
+function findNearbyBoat(maxDist = 26) {
   let closest = null;
   let bestDist = maxDist;
   for (const boat of world.boats.values()) {
@@ -235,33 +237,47 @@ function findNearbyNpc(maxDist = 22) {
   return closest;
 }
 
-function findAdjacentShoreTile(preferDx = 0, preferDy = 0) {
+function findLandingTileFromStep(nextX, nextY) {
+  const halfW = player.width / 2;
+  const halfH = player.height / 2;
+
+  const samplePoints = [
+    { x: nextX, y: nextY },
+    { x: nextX - halfW, y: nextY - halfH },
+    { x: nextX + halfW, y: nextY - halfH },
+    { x: nextX - halfW, y: nextY + halfH },
+    { x: nextX + halfW, y: nextY + halfH }
+  ];
+
+  for (const pt of samplePoints) {
+    const tx = Math.floor(pt.x / TILE_SIZE);
+    const ty = Math.floor(pt.y / TILE_SIZE);
+    if (world.isLandWalkable(tx, ty)) {
+      return { tx, ty };
+    }
+  }
+  return null;
+}
+
+function findAdjacentShoreTile(maxPixelDist = 28) {
   const baseTx = Math.floor(player.x / TILE_SIZE);
   const baseTy = Math.floor(player.y / TILE_SIZE);
 
-  if (preferDx !== 0 || preferDy !== 0) {
-    const probeTx = Math.floor((player.x + preferDx * 11) / TILE_SIZE);
-    const probeTy = Math.floor((player.y + preferDy * 11) / TILE_SIZE);
-    if (world.isLandWalkable(probeTx, probeTy)) {
-      return { tx: probeTx, ty: probeTy };
-    }
-  }
-
   let best = null;
-  let bestDist = Infinity;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      if (dx === 0 && dy === 0) continue;
+  let bestDist = maxPixelDist;
+
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
       const tx = baseTx + dx;
       const ty = baseTy + dy;
-      if (world.isLandWalkable(tx, ty)) {
-        const cx = (tx + 0.5) * TILE_SIZE;
-        const cy = (ty + 0.5) * TILE_SIZE;
-        const d = Math.hypot(cx - player.x, cy - player.y);
-        if (d < bestDist) {
-          bestDist = d;
-          best = { tx, ty };
-        }
+      if (!world.isLandWalkable(tx, ty)) continue;
+
+      const cx = (tx + 0.5) * TILE_SIZE;
+      const cy = (ty + 0.5) * TILE_SIZE;
+      const d = Math.hypot(cx - player.x, cy - player.y);
+      if (d <= bestDist) {
+        bestDist = d;
+        best = { tx, ty };
       }
     }
   }
@@ -274,6 +290,8 @@ function boardBoat(boat) {
   player.drowned = false;
   player.x = boat.x;
   player.y = boat.y;
+  player.overworldX = player.x;
+  player.overworldY = player.y;
   showBanner("BOARDED BOAT - STEER ONTO SHORE OR PRESS [E] TO EXIT");
 }
 
@@ -289,7 +307,6 @@ function disembarkToTile(shoreTile) {
   player.overworldY = player.y;
   player.inBoat = false;
   player.activeBoatId = null;
-  player.boardCooldown = 0.6;
   showBanner("DISEMBARKED ON SHORE");
 }
 
@@ -315,7 +332,7 @@ function handleInteract() {
   }
 
   if (player.inBoat) {
-    const shore = findAdjacentShoreTile();
+    const shore = findAdjacentShoreTile(28);
     if (shore) {
       disembarkToTile(shore);
     } else {
@@ -324,7 +341,7 @@ function handleInteract() {
     return;
   }
 
-  const boat = findNearbyBoat(24);
+  const boat = findNearbyBoat(26);
   if (boat) {
     if (!boat.guarded) {
       boardBoat(boat);
@@ -372,9 +389,6 @@ function canMoveTo(nextX, nextY, mode) {
 function update(dt) {
   if (statusBanner.timer > 0) {
     statusBanner.timer -= dt;
-  }
-  if (player.boardCooldown > 0) {
-    player.boardCooldown = Math.max(0, player.boardCooldown - dt);
   }
 
   if (player.hp <= 0 || dialogue.activeNpc || inventoryUI.isOpen) {
@@ -455,13 +469,6 @@ function update(dt) {
       if (canMoveTo(player.x + moveX, player.y, "land")) player.x += moveX;
       if (canMoveTo(player.x, player.y + moveY, "land")) player.y += moveY;
 
-      if (player.boardCooldown <= 0) {
-        const touchBoat = findNearbyBoat(14);
-        if (touchBoat && !touchBoat.guarded) {
-          boardBoat(touchBoat);
-        }
-      }
-
       const pTx = Math.floor(player.x / TILE_SIZE);
       const pTy = Math.floor(player.y / TILE_SIZE);
       if (world.getTile(pTx, pTy) === TILES.DOOR) {
@@ -478,7 +485,11 @@ function update(dt) {
       const nextY = player.y + moveY;
       const boat = world.boats.get(player.activeBoatId);
 
-      if (canMoveTo(nextX, nextY, "water")) {
+      // Check if any corner of the boat touches walkable shore
+      const landingTile = findLandingTileFromStep(nextX + vx * 3, nextY + vy * 3);
+      if (landingTile) {
+        disembarkToTile(landingTile);
+      } else if (canMoveTo(nextX, nextY, "water")) {
         player.x = nextX;
         player.y = nextY;
         if (boat) {
@@ -486,17 +497,11 @@ function update(dt) {
           boat.y = player.y;
         }
       } else {
-        const probeTx = Math.floor((player.x + vx * 10) / TILE_SIZE);
-        const probeTy = Math.floor((player.y + vy * 10) / TILE_SIZE);
-        if (world.isLandWalkable(probeTx, probeTy)) {
-          disembarkToTile({ tx: probeTx, ty: probeTy });
-        } else {
-          if (canMoveTo(nextX, player.y, "water")) player.x = nextX;
-          if (canMoveTo(player.x, nextY, "water")) player.y = nextY;
-          if (boat) {
-            boat.x = player.x;
-            boat.y = player.y;
-          }
+        if (canMoveTo(nextX, player.y, "water")) player.x = nextX;
+        if (canMoveTo(player.x, nextY, "water")) player.y = nextY;
+        if (boat) {
+          boat.x = player.x;
+          boat.y = player.y;
         }
       }
     }
@@ -778,7 +783,7 @@ function drawHUD() {
 
   if (player.inBoat && !dialogue.activeNpc) {
     ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
-    if (findAdjacentShoreTile()) {
+    if (findAdjacentShoreTile(28)) {
       ctx.fillRect(54, VIEW_HEIGHT - 22, VIEW_WIDTH - 108, 16);
       ctx.fillStyle = "#38bdf8";
       ctx.fillText(`[E] DISEMBARK ON SHORE`, 76, VIEW_HEIGHT - 14);
@@ -788,14 +793,20 @@ function drawHUD() {
       ctx.fillText(`[E] ABANDON SHIP (DROWN)`, 68, VIEW_HEIGHT - 14);
     }
   } else if (!player.inBoat && !dialogue.activeNpc) {
-    const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
+    const nearBoat = interior.activeRoom ? null : findNearbyBoat(26);
     const nearNpc = findNearbyNpc(22);
 
-    if (nearBoat && nearBoat.guarded) {
+    if (nearBoat) {
       ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
-      ctx.fillRect(46, VIEW_HEIGHT - 22, VIEW_WIDTH - 92, 16);
-      ctx.fillStyle = "#fbbf24";
-      ctx.fillText(`[E] HIRE BOAT (${nearBoat.fee} COINS)`, 66, VIEW_HEIGHT - 14);
+      if (nearBoat.guarded) {
+        ctx.fillRect(46, VIEW_HEIGHT - 22, VIEW_WIDTH - 92, 16);
+        ctx.fillStyle = "#fbbf24";
+        ctx.fillText(`[E] HIRE BOAT (${nearBoat.fee} COINS)`, 66, VIEW_HEIGHT - 14);
+      } else {
+        ctx.fillRect(68, VIEW_HEIGHT - 22, VIEW_WIDTH - 136, 16);
+        ctx.fillStyle = "#38bdf8";
+        ctx.fillText(`[E] BOARD BOAT`, 96, VIEW_HEIGHT - 14);
+      }
     } else if (nearNpc) {
       ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
       ctx.fillRect(54, VIEW_HEIGHT - 22, VIEW_WIDTH - 108, 16);
