@@ -19,12 +19,14 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 const WORLD_SEED = 48151623;
+const storage = new SaveStorage();
 const cultureEngine = new CultureEngine(WORLD_SEED);
 const artifactEngine = new ArtifactEngine(WORLD_SEED);
-const world = new World(WORLD_SEED, cultureEngine);
-const interior = new InteriorManager(WORLD_SEED, cultureEngine);
+const world = new World(WORLD_SEED, cultureEngine, storage);
+const interior = new InteriorManager(WORLD_SEED, cultureEngine, storage);
 const worldMap = new WorldMap(world);
 const dialogue = new DialogueSystem(WORLD_SEED, world, worldMap, artifactEngine);
+const combat = new CombatSystem(world, interior, dialogue, artifactEngine, storage);
 const spawn = world.findSpawnTile();
 
 const player = {
@@ -41,8 +43,9 @@ const player = {
   inBoat: false,
   activeBoatId: null,
   coins: 45,
-  hp: 4,
+  hp: 6,
   maxHp: 6,
+  combatKills: 0,
   inventory: [
     artifactEngine.generateArtifact(WORLD_SEED + 11),
     artifactEngine.generateArtifact(WORLD_SEED + 29)
@@ -66,6 +69,18 @@ worldMap.discoverAround(player.x, player.y, 16);
 
 const keys = new Set();
 window.addEventListener("keydown", (e) => {
+  // Game Over Reload Handler
+  if (player.hp <= 0) {
+    if (e.key === "Enter" || e.key.toLowerCase() === "l") {
+      if (storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine)) {
+        showBanner("SAVE LOADED");
+      } else {
+        location.reload();
+      }
+    }
+    return;
+  }
+
   // Handle typing while renaming an artifact
   if (inventoryUI.isOpen && inventoryUI.renaming) {
     e.preventDefault();
@@ -89,6 +104,24 @@ window.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   keys.add(key);
 
+  // Quick Save & Quick Load
+  if (!dialogue.activeNpc && !inventoryUI.isOpen) {
+    if (key === "k") {
+      const ok = storage.saveGame(WORLD_SEED, player, world, interior, worldMap, dialogue, artifactEngine);
+      showBanner(ok ? "GAME SAVED TO LOCALSTORAGE" : "SAVE FAILED");
+      return;
+    }
+    if (key === "l") {
+      if (storage.hasSave()) {
+        const ok = storage.loadGame(player, world, interior, worldMap, dialogue, artifactEngine);
+        showBanner(ok ? "SAVED GAME LOADED" : "LOAD FAILED");
+      } else {
+        showBanner("NO SAVED GAME FOUND");
+      }
+      return;
+    }
+  }
+
   // Dialogue Navigation
   if (dialogue.activeNpc) {
     if (key === "w" || key === "arrowup") {
@@ -105,7 +138,7 @@ window.addEventListener("keydown", (e) => {
         ? player.inventory.length + 1
         : dialogue.tradeItems.length + 1;
       dialogue.selectedIndex = (dialogue.selectedIndex + 1) % max;
-    } else if (key === "e" || key === " " || key === "enter") {
+    } else if (key === "e" || key === "enter") {
       dialogue.selectOption(player);
     } else if (key === "escape") {
       dialogue.close();
@@ -152,7 +185,13 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (key === "e" || key === " ") {
+  if (key === " " || key === "z") {
+    e.preventDefault();
+    combat.triggerAttack(player);
+    return;
+  }
+
+  if (key === "e") {
     handleInteract();
   }
 });
@@ -188,6 +227,7 @@ function findNearbyNpc(maxDist = 22) {
   let closest = null;
   let bestDist = maxDist;
   for (const npc of world.npcs.values()) {
+    if (npc.dead || npc.hostile) continue;
     const dist = Math.hypot(npc.x - player.x, npc.y - player.y);
     if (dist < bestDist) {
       bestDist = dist;
@@ -224,11 +264,12 @@ function handleInteract() {
     } else if (player.coins >= boat.fee) {
       player.coins -= boat.fee;
       boat.guarded = false;
+      storage.unlockedBoats.add(boat.id);
       showBanner(`PAID ${boat.fee} COINS TO BOATKEEPER`);
       boardBoat(boat);
       return;
     } else {
-      showBanner(`BOATKEEPER WANTS ${boat.fee} COINS`);
+      showBanner(`BOATKEEPER WANTS ${boat.fee} COINS (OR DEFEAT GUARD)`);
       return;
     }
   }
@@ -265,7 +306,7 @@ function update(dt) {
     statusBanner.timer -= dt;
   }
 
-  if (dialogue.activeNpc || inventoryUI.isOpen) {
+  if (player.hp <= 0 || dialogue.activeNpc || inventoryUI.isOpen) {
     return;
   }
 
@@ -283,6 +324,9 @@ function update(dt) {
     return;
   }
 
+  combat.update(dt, player, showBanner);
+  if (player.hp <= 0) return;
+
   if (interior.activeRoom) {
     interior.updateResidents(dt);
 
@@ -291,10 +335,12 @@ function update(dt) {
       vx /= len;
       vy /= len;
 
-      if (Math.abs(vx) > Math.abs(vy)) {
-        player.facing = vx > 0 ? "right" : "left";
-      } else {
-        player.facing = vy > 0 ? "down" : "up";
+      if (combat.swingTimer <= 0) {
+        if (Math.abs(vx) > Math.abs(vy)) {
+          player.facing = vx > 0 ? "right" : "left";
+        } else {
+          player.facing = vy > 0 ? "down" : "up";
+        }
       }
 
       const moveX = vx * player.speed * dt;
@@ -322,10 +368,12 @@ function update(dt) {
     vx /= len;
     vy /= len;
 
-    if (Math.abs(vx) > Math.abs(vy)) {
-      player.facing = vx > 0 ? "right" : "left";
-    } else {
-      player.facing = vy > 0 ? "down" : "up";
+    if (combat.swingTimer <= 0) {
+      if (Math.abs(vx) > Math.abs(vy)) {
+        player.facing = vx > 0 ? "right" : "left";
+      } else {
+        player.facing = vy > 0 ? "down" : "up";
+      }
     }
 
     const currentSpeed = player.inBoat ? player.sailSpeed : player.speed;
@@ -487,6 +535,7 @@ function drawBoat(screenX, screenY, facing = "down") {
 }
 
 function drawNpc(npc, screenX, screenY) {
+  if (npc.dead) return;
   const sheet = cultureEngine.getNpcSpriteSheet(npc.profile);
   const dirIndex = { down: 0, up: 1, left: 2, right: 3 }[npc.facing] || 0;
   const frameIndex = Math.sin(npc.walkTimer) > 0 ? 1 : 0;
@@ -502,9 +551,15 @@ function drawNpc(npc, screenX, screenY) {
     16,
     16
   );
+
+  combat.renderHealthBar(ctx, npc, screenX, screenY);
 }
 
 function drawPlayer(screenX, screenY) {
+  if (combat.playerInvuln > 0 && Math.floor(combat.playerInvuln * 20) % 2 === 0) {
+    return;
+  }
+
   if (player.inBoat && !interior.activeRoom) {
     drawBoat(screenX, screenY, player.facing);
     ctx.fillStyle = "#2b6cb0";
@@ -565,7 +620,6 @@ function drawInventoryScreen() {
     return;
   }
 
-  // Grid of carried artifacts
   const cols = 6;
   for (let i = 0; i < player.inventory.length; i++) {
     const item = player.inventory[i];
@@ -585,7 +639,6 @@ function drawInventoryScreen() {
     ctx.drawImage(spr, sx + 6, sy + 2, 24, 24);
   }
 
-  // Inspector Panel at bottom
   const selected = player.inventory[inventoryUI.selectedIndex];
   if (selected) {
     ctx.fillStyle = "#111827";
@@ -618,11 +671,29 @@ function drawInventoryScreen() {
   }
 }
 
+function drawGameOverScreen() {
+  ctx.fillStyle = "rgba(9, 13, 22, 0.92)";
+  ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "14px monospace";
+  ctx.fillStyle = "#ef4444";
+  ctx.fillText("TRAVELER HAS FALLEN", VIEW_WIDTH / 2, VIEW_HEIGHT / 2 - 24);
+
+  ctx.font = "8px monospace";
+  ctx.fillStyle = "#e2e8f0";
+  const prompt = storage.hasSave()
+    ? "PRESS [ENTER] TO RELOAD SAVED GAME"
+    : "PRESS [ENTER] TO BEGIN A NEW JOURNEY";
+  ctx.fillText(prompt, VIEW_WIDTH / 2, VIEW_HEIGHT / 2 + 8);
+  ctx.textAlign = "left";
+}
+
 function drawHUD() {
   ctx.fillStyle = "rgba(11, 19, 32, 0.85)";
   ctx.fillRect(0, 0, VIEW_WIDTH, 16);
 
-  // Hearts
   for (let i = 0; i < player.maxHp; i++) {
     ctx.fillStyle = i < player.hp ? "#ef4444" : "#334155";
     ctx.fillRect(6 + i * 7, 5, 5, 5);
@@ -631,8 +702,9 @@ function drawHUD() {
   ctx.fillStyle = "#e2e8f0";
   ctx.font = "8px monospace";
   ctx.textBaseline = "middle";
-  ctx.fillText(`COINS:${player.coins}`, 54, 8);
-  ctx.fillText(`[I] ITEMS [M] MAP [E] TALK`, VIEW_WIDTH - 134, 8);
+  const dmg = combat.getPlayerDamage(player);
+  ctx.fillText(`C:${player.coins} ATK:${dmg}`, 52, 8);
+  ctx.fillText(`[I] [M] [E] [SPC] [K]SAVE`, VIEW_WIDTH - 128, 8);
 
   if (!player.inBoat && !dialogue.activeNpc) {
     const nearBoat = interior.activeRoom ? null : findNearbyBoat(24);
@@ -663,6 +735,12 @@ function render() {
   ctx.save();
   ctx.scale(renderScale, renderScale);
 
+  if (player.hp <= 0) {
+    drawGameOverScreen();
+    ctx.restore();
+    return;
+  }
+
   if (inventoryUI.isOpen) {
     drawInventoryScreen();
     ctx.restore();
@@ -676,7 +754,7 @@ function render() {
   }
 
   if (interior.activeRoom) {
-    interior.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player, drawPlayer);
+    interior.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player, drawPlayer, combat);
     drawHUD();
     if (dialogue.activeNpc) {
       dialogue.render(ctx, VIEW_WIDTH, VIEW_HEIGHT, player);
@@ -723,6 +801,7 @@ function render() {
   }
 
   drawPlayer(player.x - camX, player.y - camY);
+  combat.renderSword(ctx, player.x - camX, player.y - camY, player.facing);
   drawHUD();
 
   if (dialogue.activeNpc) {
