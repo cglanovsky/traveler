@@ -2,12 +2,20 @@ class WorldMap {
   constructor(world) {
     this.world = world;
     this.exploredChunks = new Map();
+    this.markers = [];
     this.isOpen = false;
     this.zoom = 1.0;
     this.minZoom = 0.25;
     this.maxZoom = 4.0;
     this.panX = 0;
     this.panY = 0;
+  }
+
+  addMarker(tx, ty, label, color = "#fde047") {
+    const exists = this.markers.some((m) => m.tx === tx && m.ty === ty && m.label === label);
+    if (!exists) {
+      this.markers.push({ tx, ty, label, color });
+    }
   }
 
   discoverAround(playerX, playerY, tileRadius = 14) {
@@ -172,10 +180,10 @@ class WorldMap {
       }
     }
 
-    // Discovered Settlement Labels
     ctx.font = "7px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
+
     for (const settlement of this.world.settlements.values()) {
       if (!this.isTileDiscovered(settlement.tx, settlement.ty)) continue;
 
@@ -188,10 +196,20 @@ class WorldMap {
         ctx.fillText(settlement.name, Math.round(sx), Math.round(sy) - 3);
       }
     }
+
+    for (const m of this.markers) {
+      const mx = centerX + (m.tx - this.panX) * tilePx;
+      const my = centerY + (m.ty - this.panY) * tilePx;
+      if (mx >= mapX && mx <= mapX + mapW && my >= mapY && my <= mapY + mapH) {
+        ctx.fillStyle = m.color;
+        ctx.fillRect(Math.round(mx - 1), Math.round(my - 1), 3, 3);
+        ctx.fillText(m.label, Math.round(mx), Math.round(my) - 3);
+      }
+    }
     ctx.textAlign = "left";
 
-    const pTx = player.x / TILE_SIZE;
-    const pTy = player.y / TILE_SIZE;
+    const pTx = (player.overworldX || player.x) / TILE_SIZE;
+    const pTy = (player.overworldY || player.y) / TILE_SIZE;
     const px = centerX + (pTx - this.panX) * tilePx;
     const py = centerY + (pTy - this.panY) * tilePx;
 
