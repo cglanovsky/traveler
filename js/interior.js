@@ -60,7 +60,6 @@ class InteriorManager {
     const rugColors = ["#991b1b", "#1e40af", "#065f46", "#92400e", "#5b21b6"];
     const rugColor = rugColors[rng.int(0, rugColors.length - 1)];
 
-    // Center Woven Rug
     const rugW = rng.int(4, 6);
     const rugH = rng.int(3, 4);
     const rugX = Math.floor((width - rugW) / 2);
@@ -76,14 +75,12 @@ class InteriorManager {
     const wallDecor = [];
     const usedWallX = new Set();
 
-    // North Wall Fireplace
     const fpX = rng.int(3, width - 5);
     wallDecor.push({ type: "fireplace", tx: fpX, ty: 1 });
     usedWallX.add(fpX);
     usedWallX.add(fpX + 1);
     blocked[2 * width + fpX] = 1;
 
-    // Windows, Paintings & Shelves along North Wall (y = 1)
     for (let wx = 2; wx < width - 2; wx++) {
       if (usedWallX.has(wx)) continue;
       const roll = rng.next();
@@ -128,7 +125,6 @@ class InteriorManager {
       }
     };
 
-    // Place Beds in upper or lower corners
     const bedSpots = [
       { tx: 2, ty: 3 },
       { tx: width - 3, ty: 3 },
@@ -145,7 +141,6 @@ class InteriorManager {
       }
     }
 
-    // Place Table & Chairs near room center
     const tableX = exitX + (rng.next() < 0.5 ? -2 : 1);
     const tableY = Math.floor(height / 2);
     if (canPlaceObj(tableX, tableY, 2, 1)) {
@@ -166,7 +161,6 @@ class InteriorManager {
       }
     }
 
-    // Place 1-2 Storage Chests
     const chestCount = rng.int(1, 2);
     for (let c = 0; c < chestCount; c++) {
       for (let attempt = 0; attempt < 20; attempt++) {
@@ -180,7 +174,6 @@ class InteriorManager {
       }
     }
 
-    // Spawn 1 to 3 Resident NPCs
     const residentCount = isHut ? rng.int(1, 2) : rng.int(1, 3);
     const residents = [];
     for (let r = 0; r < residentCount; r++) {
@@ -196,6 +189,8 @@ class InteriorManager {
           );
           residents.push({
             id: npcId,
+            settlementId: building.settlementId,
+            cultureId: building.cultureId,
             x: rx * TILE_SIZE + TILE_SIZE / 2,
             y: ry * TILE_SIZE + TILE_SIZE / 2,
             facing: "down",
@@ -380,7 +375,6 @@ class InteriorManager {
       }
     }
 
-    // Wall Decorations
     for (const dec of room.wallDecor) {
       const sx = offsetX + dec.tx * TILE_SIZE;
       const sy = offsetY + dec.ty * TILE_SIZE;
@@ -426,7 +420,6 @@ class InteriorManager {
       }
     }
 
-    // Floor Furniture
     for (const item of room.furniture) {
       const sx = offsetX + item.tx * TILE_SIZE;
       const sy = offsetY + item.ty * TILE_SIZE;
@@ -458,7 +451,6 @@ class InteriorManager {
       }
     }
 
-    // Resident NPCs
     for (const npc of room.residents) {
       const sheet = this.culture.getNpcSpriteSheet(npc.profile);
       const dirIndex = { down: 0, up: 1, left: 2, right: 3 }[npc.facing] || 0;
@@ -477,7 +469,6 @@ class InteriorManager {
       );
     }
 
-    // Player
     drawPlayerFn(offsetX + player.x, offsetY + player.y);
   }
 }
